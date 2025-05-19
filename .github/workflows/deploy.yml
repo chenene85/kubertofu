@@ -7,29 +7,63 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      docker:
+        image: docker:dind
+        options: --privileged
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup Docker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker.io
+          sudo usermod -aG docker $USER
+          newgrp docker
+
       - name: Install OpenTofu
         run: |
-          wget -q https://github.com/opentofu/opentofu/releases/download/v1.6.0-alpha3/tofu_1.6.0-alpha3_linux_amd64.deb
-          sudo dpkg -i tofu_1.6.0-alpha3_linux_amd64.deb
+          # Instalar OpenTofu usando snap
+          sudo snap install --classic opentofu
+          tofu --version
 
-      - name: Install kubectl
+      - name: Install kubectl and Minikube
         run: |
+          # Kubectl
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 
-      - name: Configure Minikube (para entornos locales)
-        run: |
+          # Minikube
           curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
           sudo install minikube-linux-amd64 /usr/local/bin/minikube
-          minikube start --driver=docker
 
-      - name: Initialize OpenTofu
+          # Configuración especial para CI
+          export MINIKUBE_IN_STYLE=false
+          export CHANGE_MINIKUBE_NONE_USER=true
+          minikube start --driver=docker --force --wait=all
+          minikube update-context
+
+          # Verificación
+          kubectl cluster-info
+          minikube status
+
+      - name: Setup Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          minikube kubectl -- config view --flatten > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Terraform Init
         run: tofu init
 
-      - name: Apply OpenTofu configuration
+      - name: Terraform Apply
         run: tofu apply -auto-approve
+
+      - name: Verify Deployment
+        run: |
+          kubectl get all -A
+          minikube service list --url
