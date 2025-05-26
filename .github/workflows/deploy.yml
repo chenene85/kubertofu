@@ -18,42 +18,61 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Docker
+      - name: Setup Docker (Reinstalación Limpia y Robusta)
         run: |
-          # Detener los servicios de Docker
-          sudo systemctl stop docker
-          sudo systemctl stop containerd
-          sudo systemctl stop docker.socket
+          # 1. Limpiar cualquier instalación de Docker o containerd existente
+          echo "Deteniendo servicios de Docker y containerd..."
+          sudo systemctl stop docker || true
+          sudo systemctl stop containerd || true
+          sudo systemctl stop docker.socket || true
           
-          # Desinstalar Docker y sus dependencias
-          sudo apt-get purge -y docker.io docker-ce docker-ce-cli containerd.io
+          echo "Purgando paquetes de Docker y containerd existentes..."
+          sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker.io runc || true
+          sudo apt-get autoremove -y || true
           
-          # Eliminar directorios y archivos relacionados con Docker
-          sudo rm -rf /var/lib/docker
-          sudo rm -rf /etc/docker
-          sudo rm -rf /var/run/docker
+          echo "Eliminando directorios residuales de Docker..."
+          sudo rm -rf /var/lib/docker || true
+          sudo rm -rf /etc/docker || true
+          sudo rm -rf /var/run/docker || true
+          sudo rm -rf /var/lib/containerd || true
+          sudo rm -rf /etc/containerd || true
           
-          # Eliminar containerd
-          sudo apt-get purge -y containerd
-          sudo rm -rf /etc/containerd
-          sudo rm -rf /var/lib/containerd
-          
-          # Actualizar la caché de APT
+          # 2. Actualizar la caché de APT y asegurar las dependencias básicas
+          echo "Actualizando la caché de APT y asegurando dependencias básicas..."
           sudo apt-get update
+          sudo apt-get install -y ca-certificates curl gnupg lsb-release
           
-          # Instalar Docker
-          sudo apt-get install -y docker.io
+          # 3. Añadir la clave GPG oficial de Docker
+          echo "Añadiendo la clave GPG oficial de Docker..."
+          sudo install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
           
-          # Iniciar el servicio de Docker
+          # 4. Configurar el repositorio de Docker
+          echo "Configurando el repositorio oficial de Docker..."
+          echo \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+            $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+            sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            
+          # 5. Instalar Docker Engine
+          echo "Instalando Docker Engine desde el repositorio oficial..."
+          sudo apt-get update
+          sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+          
+          # 6. Iniciar el servicio de Docker
+          echo "Iniciando el servicio de Docker..."
           sudo systemctl start docker
           
-          # Agregar el usuario al grupo docker
+          # 7. Agregar el usuario al grupo docker
+          echo "Agregando el usuario '$USER' al grupo 'docker'..."
           sudo usermod -aG docker $USER
-          newgrp docker
+          newgrp docker # Esto no tendrá efecto inmediato en el mismo script, pero es buena práctica
           
-          # Verificar la instalación
+          # 8. Verificar la instalación
+          echo "Verificando la instalación de Docker..."
           docker --version
           docker info
+          echo "¡Configuración de Docker completada!"
     
       - name: Install OpenTofu
         run: |
