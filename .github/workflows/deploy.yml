@@ -1,119 +1,75 @@
 name: Deploy with OpenTofu
-
 on:
-  push:
-    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
 
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25 # Incrementado un poco por si acaso
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
 
-    services:
-      docker:
-        image: docker:dind
-        options: --privileged
+    services:
+      docker:
+        image: docker:dind
+        options: --privileged
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    steps:
 
-      - name: Check pre-installed Docker
-        run: |
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Check preinstalled Docker
+        run: |
           docker --version
-          docker info
-          groups
+          docker info
+          groups # Verifies if the runner user is in the docker group
 
-      - name: Install OpenTofu
-        run: |
-          sudo snap install --classic opentofu
-          tofu --version
+          
 
-      - name: Install kubectl and Minikube
-        run: |
-          echo "Installing Kubectl..."
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-          kubectl version --client
+      - name: Install OpenTofu
+        run: |
+          # Instalar OpenTofu usando snap
+          sudo snap install --classic opentofu
+          tofu --version
 
-          echo "Installing Minikube..."
-          curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
-          sudo install minikube-linux-amd64 /usr/local/bin/minikube
-          minikube version
+      - name: Install kubectl and Minikube
+        run: |
+          # Kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 
-          echo "Starting Minikube..."
-          export MINIKUBE_IN_STYLE=false
-          export CHANGE_MINIKUBE_NONE_USER=true
-          # Añadido --alsologtostderr y -v=3 para logs más detallados de Minikube
-          minikube start --driver=docker --force --wait=all --alsologtostderr -v=3
-          
-          echo "Updating Minikube context..."
-          minikube update-context
+          # Minikube
+          curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+          sudo install minikube-linux-amd64 /usr/local/bin/minikube
 
-          echo "--- Initial Minikube Status ---"
-          minikube status
-          
-          echo "--- Initial Kubectl Cluster Info ---"
-          kubectl cluster-info
-          
-          echo "--- Waiting for Kubernetes API server to be fully responsive ---"
-          # Un chequeo adicional más robusto
-          timeout 120s bash -c 'until kubectl get --raw=/readyz; do echo "Waiting for /readyz..."; sleep 2; done'
-          echo "/readyz check passed."
-          timeout 120s bash -c 'until kubectl get componentstatuses; do echo "Waiting for component statuses..."; sleep 2; done'
-          echo "Component statuses check passed."
-          
-          echo "--- Final Minikube Status ---"
-          minikube status
-          
-          echo "--- Final Kubectl Cluster Info ---"
-          kubectl cluster-info
-          
-          echo "--- Kubectl Get Nodes ---"
-          kubectl get nodes -o wide
+          # Configuración especial para CI
+          export MINIKUBE_IN_STYLE=false
+          export CHANGE_MINIKUBE_NONE_USER=true
+          minikube start --driver=docker --force --wait=all
+          minikube update-context
 
+          # Verificación
+          kubectl cluster-info
+          minikube status
 
-      - name: Setup Kubeconfig and Verify
-        run: |
-          echo "--- Ensuring .kube directory exists ---"
-          mkdir -p ${{ runner.homedir }}/.kube
+      - name: Setup Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          minikube kubectl -- config view --flatten > ~/.kube/config
+          chmod 600 ~/.kube/config
 
-          echo "--- Generating Kubeconfig ---"
-          minikube kubectl -- config view --flatten > ${{ runner.homedir }}/.kube/config
-          chmod 600 ${{ runner.homedir }}/.kube/config
+      - name: Terraform Init
+        run: tofu init
 
-          echo "--- Kubeconfig content (${{ runner.homedir }}/.kube/config) ---"
-          # ESTE PASO ES CRÍTICO PARA VER EL CONTENIDO DEL KUBECONFIG
-          cat ${{ runner.homedir }}/.kube/config
-          
-          echo "--- Verifying Kubeconfig with Kubectl ---"
-          echo "Current Context:"
-          KUBECONFIG=${{ runner.homedir }}/.kube/config kubectl config current-context
-          echo "Cluster Info using Kubeconfig:"
-          KUBECONFIG=${{ runner.homedir }}/.kube/config kubectl cluster-info
-          echo "Get Nodes using Kubeconfig:"
-          KUBECONFIG=${{ runner.homedir }}/.kube/config kubectl get nodes
+      - name: Terraform Apply
+        env:
+          KUBECONFIG: ${{ runner.homedir }}/.kube/config
+          TF_LOG: DEBUG # Mantenlo para obtener logs detallados
+        run: tofu apply -auto-approve
 
-      - name: Terraform Init
-        env:
-          KUBECONFIG: ${{ runner.homedir }}/.kube/config
-          TF_LOG: DEBUG # Logs de debug también para init
-        run: |
-          tofu init -upgrade
-          echo "--- Terraform provider plugins ---"
-          ls -la .terraform/providers/registry.terraform.io/hashicorp/kubernetes/
+            
 
-      - name: Terraform Apply
-        env:
-          KUBECONFIG: ${{ runner.homedir }}/.kube/config # Asegúrate que esta es la ruta correcta
-          TF_LOG: DEBUG
-        run: tofu apply -auto-approve
-
-      - name: Verify Deployment
-        env:
-          KUBECONFIG: ${{ runner.homedir }}/.kube/config
-        run: |
-          echo "--- Verifying deployments after Terraform apply ---"
-          sleep 15 # Dar un pequeño tiempo para que todo se estabilice
-          kubectl get all -A
-          minikube service list --url
+      - name: Verify Deployment
+        run: |
+          kubectl get all -A
+          minikube service list --url
