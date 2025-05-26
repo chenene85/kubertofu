@@ -1,75 +1,83 @@
 name: Deploy with OpenTofu
+
 on:
-  push:
-    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
 
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
 
-    services:
-      docker:
-        image: docker:dind
-        options: --privileged
+    services:
+      docker:
+        image: docker:dind
+        options: --privileged
 
-    steps:
+    steps:
 
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
         
       - name: Check preinstalled Docker
-        run: |
+        run: |
           docker --version
-          docker info
-          groups # Verifies if the runner user is in the docker group
+          docker info
+          groups # Verifies if the runner user is in the docker group
 
-          
+      - name: Install OpenTofu
+        run: |
+          # Instalar OpenTofu usando snap
+          sudo snap install --classic opentofu
+          tofu --version
 
-      - name: Install OpenTofu
-        run: |
-          # Instalar OpenTofu usando snap
-          sudo snap install --classic opentofu
-          tofu --version
+      - name: Install kubectl and Minikube
+        run: |
+          # Kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 
-      - name: Install kubectl and Minikube
-        run: |
-          # Kubectl
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          # Minikube
+          curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+          sudo install minikube-linux-amd64 /usr/local/bin/minikube
 
-          # Minikube
-          curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
-          sudo install minikube-linux-amd64 /usr/local/bin/minikube
+          # Configuración especial para CI
+          export MINIKUBE_IN_STYLE=false
+          export CHANGE_MINIKUBE_NONE_USER=true
+          minikube start --driver=docker --force --wait=all
+          minikube update-context
 
-          # Configuración especial para CI
-          export MINIKUBE_IN_STYLE=false
-          export CHANGE_MINIKUBE_NONE_USER=true
-          minikube start --driver=docker --force --wait=all
-          minikube update-context
+          # Verificación
+          kubectl cluster-info
+          minikube status
 
-          # Verificación
-          kubectl cluster-info
-          minikube status
+      - name: Setup Kubeconfig
+        run: |
+          echo "Current HOME directory: $HOME"
+          echo "Ensuring .kube directory exists at $HOME/.kube"
+          mkdir -p "$HOME/.kube"
+          echo "Generating Kubeconfig at $HOME/.kube/config"
+          minikube kubectl -- config view --flatten > "$HOME/.kube/config"
+          echo "Setting permissions for $HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+          echo "Kubeconfig content:"
+          cat "$HOME/.kube/config"
+          echo "Verifying Kubeconfig with Kubectl:"
+          KUBECONFIG="$HOME/.kube/config" kubectl config current-context
+          KUBECONFIG="$HOME/.kube/config" kubectl cluster-info
+          KUBECONFIG="$HOME/.kube/config" kubectl get nodes
 
-      - name: Setup Kubeconfig
-        run: |
-          mkdir -p ~/.kube
-          minikube kubectl -- config view --flatten > ~/.kube/config
-          chmod 600 ~/.kube/config
+      - name: Terraform Init
+        run: tofu init
 
-      - name: Terraform Init
-        run: tofu init
+      - name: Terraform Apply
+        env:
+          KUBECONFIG: ${{ runner.homedir }}/.kube/config
+          TF_LOG: DEBUG # Mantenlo para obtener logs detallados
+        run: tofu apply -auto-approve
 
-      - name: Terraform Apply
-        env:
-          KUBECONFIG: ${{ runner.homedir }}/.kube/config
-          TF_LOG: DEBUG # Mantenlo para obtener logs detallados
-        run: tofu apply -auto-approve
+      - name: Verify Deployment
+        run: |
+          kubectl get all -A
+          minikube service list --url
 
-            
-
-      - name: Verify Deployment
-        run: |
-          kubectl get all -A
-          minikube service list --url
