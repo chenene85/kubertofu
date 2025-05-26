@@ -1,16 +1,32 @@
 # Configurar el proveedor de Kubernetes
+# terraform {
+#  required_providers {
+#    kubernetes = {
+#      source = "hashicorp/kubernetes"
+#      version = "2.23.0"
+#    }
+#  }
+# }
+
+# provider "kubernetes" {
+  # Usar el kubeconfig de Minikube
+#  config_path = "~/.kube/config"
+# }
+
 terraform {
   required_providers {
     kubernetes = {
-      source = "hashicorp/kubernetes"
+      source  = "hashicorp/kubernetes"
       version = "2.23.0"
     }
   }
 }
 
 provider "kubernetes" {
-  # Usar el kubeconfig de Minikube
-  config_path = "~/.kube/config"
+  # No especifiques 'config_path' aquí.
+  # El proveedor utilizará automáticamente la variable de entorno KUBECONFIG
+  # si está definida, o las rutas predeterminadas de kubeconfig.
+  # Al establecer KUBECONFIG en el workflow, controlamos esto de forma explícita.
 }
 
 # Crear un despliegue de Nginx
