@@ -51,6 +51,7 @@ resource "kubernetes_service" "nginx" {
   }
   spec {
     selector = {
+      # Esta línea tiene una referencia que podría ser más robusta, pero no causa el error de conexión
       App = kubernetes_deployment.nginx.spec.0.template.0.metadata.0.labels.App
     }
     port {
