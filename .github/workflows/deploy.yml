@@ -1,71 +1,63 @@
-name: Deploy with OpenTofu
+# ... (pasos anteriores como Checkout code, Install OpenTofu) ...
 
-on:
-  push:
-    branches: [ "main" ]
+      - name: Install kubectl and Minikube
+        run: |
+          # Kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          kubectl version --client
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+          # Minikube
+          curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+          sudo install minikube-linux-amd64 /usr/local/bin/minikube
+          minikube version
 
-    services:
-      docker:
-        image: docker:dind
-        options: --privileged
+          echo "Starting Minikube..."
+          # Configuración especial para CI
+          export MINIKUBE_IN_STYLE=false
+          export CHANGE_MINIKUBE_NONE_USER=true # Necesario para driver=docker en CI sin root
+          minikube start --driver=docker --force --wait=all --alsologtostderr -v=2 # -v=2 para más logs, --wait=all
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        
-      - name: Check Docker
-        run: |
-          docker --version
-          docker info
-          groups # Verifies if the runner user is in the docker group
+          echo "Updating Minikube context..."
+          minikube update-context
 
-      - name: Install OpenTofu
-        run: |
-          # Instalar OpenTofu usando snap
-          sudo snap install --classic opentofu
-          tofu --version
+          echo "Minikube status:"
+          minikube status
 
-      - name: Install kubectl and Minikube
-        run: |
-          # Kubectl
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          echo "Kubectl cluster-info:"
+          kubectl cluster-info
 
-          # Minikube
-          curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
-          sudo install minikube-linux-amd64 /usr/local/bin/minikube
+          echo "Waiting for Kubernetes API server to be fully responsive..."
+          # Un chequeo adicional para asegurar que la API está lista
+          timeout 30s bash -c 'until kubectl get --raw=/readyz; do sleep 1; done'
 
-          # Configuración especial para CI
-          export MINIKUBE_IN_STYLE=false
-          export CHANGE_MINIKUBE_NONE_USER=true
-          minikube start --driver=docker --force --wait=all
-          minikube update-context
 
-          # Verificación
-          kubectl cluster-info
-          minikube status
+      - name: Setup Kubeconfig and Debug
+        run: |
+          echo "Ensuring .kube directory exists..."
+          mkdir -p ${{ runner.homedir }}/.kube
 
-      - name: Setup Kubeconfig
-        run: |
-          mkdir -p ~/.kube
-          minikube kubectl -- config view --flatten > ~/.kube/config
-          chmod 600 ~/.kube/config
+          echo "Generating kubeconfig..."
+          minikube kubectl -- config view --flatten > ${{ runner.homedir }}/.kube/config
+          chmod 600 ${{ runner.homedir }}/.kube/config
 
-      - name: Terraform Init
-        run: tofu init
+          echo "Kubeconfig content (${{ runner.homedir }}/.kube/config):"
+          cat ${{ runner.homedir }}/.kube/config
 
-      - name: Terraform Apply
-        env:
-          KUBECONFIG: ${{ runner.homedir }}/.kube/config
-          TF_LOG: DEBUG # Mantenlo para obtener logs detallados
-        run: tofu apply -auto-approve
-        
-      - name: Verify Deployment
-        run: |
-          kubectl get all -A
-          minikube service list --url
+          echo "Current kubectl context with generated config:"
+          KUBECONFIG=${{ runner.homedir }}/.kube/config kubectl config current-context
+
+          echo "Testing kubectl connectivity with generated config:"
+          KUBECONFIG=${{ runner.homedir }}/.kube/config kubectl get nodes
+          KUBECONFIG=${{ runner.homedir }}/.kube/config kubectl get pods -A
+
+      - name: Terraform Init
+        env: # Asegurar que KUBECONFIG también está disponible aquí si es necesario
+          KUBECONFIG: ${{ runner.homedir }}/.kube/config
+        run: tofu init -upgrade # -upgrade para asegurar compatibilidad de providers
+
+      - name: Terraform Apply
+        env:
+          KUBECONFIG: ${{ runner.homedir }}/.kube/config # MUY IMPORTANTE
+          TF_LOG: DEBUG # Para obtener logs detallados de Terraform/OpenTofu
+        run: tofu apply -auto-approve
