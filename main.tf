@@ -1,82 +1,62 @@
-# Configurar el proveedor de Kubernetes
-# terraform {
-#  required_providers {
-#    kubernetes = {
-#      source = "hashicorp/kubernetes"
-#      version = "2.23.0"
-#    }
-#  }
-# }
-
-# provider "kubernetes" {
-  # Usar el kubeconfig de Minikube
-#  config_path = "~/.kube/config"
-# }
-
 terraform {
   required_providers {
     kubernetes = {
       source  = "hashicorp/kubernetes"
-      version = "2.23.0"
+      # Asegúrate de que la versión sea compatible. Puedes ver la que usas en tu `tofu init`
+      # Por tu captura anterior, parece que usas v2.23.0
+      version = "~> 2.23.0"
     }
   }
 }
 
-provider "kubernetes" {
-  # No especifiques 'config_path' aquí.
-  # El proveedor utilizará automáticamente la variable de entorno KUBECONFIG
-  # si está definida, o las rutas predeterminadas de kubeconfig.
-  # Al establecer KUBECONFIG en el workflow, controlamos esto de forma explícita.
-}
+# No es necesario un bloque provider "kubernetes" { ... } explícito con host, certs, etc.
+# si KUBECONFIG está bien configurado y se pasa como variable de entorno.
+# OpenTofu lo usará automáticamente.
 
-# Crear un despliegue de Nginx
+# Ejemplo de un recurso (esto dependerá de lo que quieras desplegar)
 resource "kubernetes_deployment" "nginx" {
   metadata {
     name = "nginx-deploy"
+    labels = {
+      App = "Nginx"
+    }
   }
 
   spec {
-    replicas = 2
-
+    replicas = 1
     selector {
       match_labels = {
-        app = "nginx"
+        App = "Nginx"
       }
     }
-
     template {
       metadata {
         labels = {
-          app = "nginx"
+          App = "Nginx"
         }
       }
-
       spec {
         container {
           image = "nginx:latest"
-          name  = "nginx-container"
+          name  = "nginx"
         }
       }
     }
   }
 }
 
-# Crear un servicio para exponer Nginx
 resource "kubernetes_service" "nginx" {
   metadata {
     name = "nginx-service"
   }
-
   spec {
     selector = {
-      app = "nginx"
+      App = kubernetes_deployment.nginx.spec.0.template.0.metadata.0.labels.App
     }
-
     port {
       port        = 80
       target_port = 80
     }
-
-    type = "NodePort"
+    type = "LoadBalancer" # O NodePort, ClusterIP según necesites
   }
 }
