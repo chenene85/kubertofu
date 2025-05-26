@@ -45,9 +45,21 @@ jobs:
           export MINIKUBE_IN_STYLE=false
           export CHANGE_MINIKUBE_NONE_USER=true
           minikube start --driver=docker --force --wait=all
-          minikube update-context
 
-          # Verificación
+          # Esperar a que el cluster de Minikube esté listo y el contexto se actualice
+          echo "Esperando a que Minikube esté completamente listo y el contexto se actualice..."
+          for i in $(seq 1 10); do
+            minikube update-context
+            # Intentar obtener info del cluster, si falla, esperar y reintentar
+            if kubectl cluster-info &>/dev/null; then
+              echo "Minikube está listo."
+              break
+            fi
+            echo "Minikube no está listo aún, reintentando en 5 segundos..."
+            sleep 5
+          done
+          
+          # Verificación final
           kubectl cluster-info
           minikube status
 
@@ -80,4 +92,3 @@ jobs:
         run: |
           kubectl get all -A
           minikube service list --url
-
