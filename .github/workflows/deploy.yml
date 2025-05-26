@@ -58,10 +58,13 @@ jobs:
 
       - name: Terraform Init
         run: tofu init
-
+        
       - name: Terraform Apply
+        env:
+          KUBECONFIG: ${{ runner.homedir }}/.kube/config
+          TF_LOG: DEBUG # Mantenlo para obtener logs detallados
         run: tofu apply -auto-approve
-
+            
       - name: Verify Deployment
         run: |
           kubectl get all -A
