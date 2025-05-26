@@ -20,12 +20,41 @@ jobs:
 
       - name: Setup Docker
         run: |
+          # Detener los servicios de Docker
+          sudo systemctl stop docker
+          sudo systemctl stop containerd
+          sudo systemctl stop docker.socket
+      
+          # Desinstalar Docker y sus dependencias
+          sudo apt-get purge -y docker.io docker-ce docker-ce-cli containerd.io
+      
+          # Eliminar directorios y archivos relacionados con Docker
+          sudo rm -rf /var/lib/docker
+          sudo rm -rf /etc/docker
+          sudo rm -rf /var/run/docker
+      
+          # Eliminar containerd
+          sudo apt-get purge -y containerd
+          sudo rm -rf /etc/containerd
+          sudo rm -rf /var/lib/containerd
+      
+          # Actualizar la caché de APT
           sudo apt-get update
+      
+          # Instalar Docker
           sudo apt-get install -y docker.io
+          
+          # Iniciar el servicio de Docker
+          sudo systemctl start docker
+      
+          # Agregar el usuario al grupo docker
           sudo usermod -aG docker $USER
           newgrp docker
-          sudo systemctl restart docker
-
+      
+          # Verificar la instalación
+          docker --version
+          docker info
+    
       - name: Install OpenTofu
         run: |
           # Instalar OpenTofu usando snap
