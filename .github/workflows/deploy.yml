@@ -7,9 +7,10 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25 # Ajustado, pero puede necesitar más si Minikube es lento
 
     services:
+      # Usar Docker-in-Docker para que Minikube pueda crear contenedores
       docker:
         image: docker:dind
         options: --privileged
@@ -18,76 +19,98 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Docker
+      - name: Check preinstalled Docker
         run: |
-          # Detener los servicios de Docker
-          sudo systemctl stop docker
-          sudo systemctl stop containerd
-          sudo systemctl stop docker.socket
-      
-          # Desinstalar Docker y sus dependencias
-          sudo apt-get purge -y docker.io docker-ce docker-ce-cli containerd.io
-      
-          # Eliminar directorios y archivos relacionados con Docker
-          sudo rm -rf /var/lib/docker
-          sudo rm -rf /etc/docker
-          sudo rm -rf /var/run/docker
-      
-          # Eliminar containerd
-          sudo apt-get purge -y containerd
-          sudo rm -rf /etc/containerd
-          sudo rm -rf /var/lib/containerd
-      
-          # Actualizar la caché de APT
-          sudo apt-get update
-      
-          # Instalar Docker
-          sudo apt-get install -y docker.io
-          
-          # Iniciar el servicio de Docker
-          sudo systemctl start docker
-      
-          # Agregar el usuario al grupo docker
-          sudo usermod -aG docker $USER
-          newgrp docker
-      
-          # Verificar la instalación
+          echo "Docker version:"
           docker --version
+          echo "Docker info:"
           docker info
-    
+
       - name: Install OpenTofu
         run: |
-          # Instalar OpenTofu usando snap
+          echo "Installing OpenTofu..."
           sudo snap install --classic opentofu
+          echo "OpenTofu version:"
           tofu --version
-      - name: Install kubectl and Minikube
+
+      - name: Install kubectl, Minikube, Start Cluster & Setup Kubeconfig
+        id: minikube_setup
         run: |
-          # Kubectl
+          # Instalar kubectl
+          echo "Installing kubectl..."
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-          # Minikube
+          
+          # Instalar Minikube
+          echo "Installing Minikube..."
           curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
           sudo install minikube-linux-amd64 /usr/local/bin/minikube
-          # Configuración especial para CI
-          export MINIKUBE_IN_STYLE=false
-          export CHANGE_MINIKUBE_NONE_USER=true
-          minikube start --driver=docker --force --wait=all
-          minikube update-context
-          # Verificación
-          kubectl cluster-info
+
+          # Configuración para Minikube en CI
+          export MINIKUBE_IN_STYLE=false # Deshabilita emojis y spinners
+          export CHANGE_MINIKUBE_NONE_USER=true # Necesario si se ejecuta como root en algunos CIs
+
+          echo "Starting Minikube with Docker driver..."
+          # --force para limpiar instalaciones previas. 
+          # --wait=all espera a que los componentes del clúster estén listos.
+          minikube start --driver=docker --force --wait=all --alsologtostderr -v=1 
+          # -v=1 para logs concisos pero útiles de minikube start
+
+          echo "Updating kubeconfig context..."
+          minikube update-context # Asegura que el contexto por defecto apunte a Minikube
+          
+          # Pequeña pausa para que el contexto se asiente
+          sleep 10
+
+          echo "Generating Kubeconfig file..."
+          mkdir -p "$HOME/.kube"
+          # --flatten y --minify para un kubeconfig autocontenido y más limpio
+          minikube kubectl -- config view --flatten --minify > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+          echo "Verifying Kubeconfig and cluster connectivity..."
+          KUBECONFIG_FILE="$HOME/.kube/config"
+          
+          echo "Kubeconfig content:"
+          cat "$KUBECONFIG_FILE"
+
+          if ! KUBECONFIG="$KUBECONFIG_FILE" kubectl config current-context &>/dev/null; then
+            echo "::error::Failed to get current-context from generated Kubeconfig."
+            exit 1
+          fi
+          echo "Current context: $(KUBECONFIG="$KUBECONFIG_FILE" kubectl config current-context)"
+
+          if ! KUBECONFIG="$KUBECONFIG_FILE" kubectl get nodes &>/dev/null; then
+            echo "::error::Failed to get nodes using generated Kubeconfig. Cluster might not be ready."
+            minikube status
+            minikube logs
+            exit 1
+          fi
+          echo "Successfully connected to Minikube cluster and fetched nodes:"
+          KUBECONFIG="$KUBECONFIG_FILE" kubectl get nodes
+          
+          echo "Minikube status:"
           minikube status
-      - name: Setup Kubeconfig
-        run: |
-          mkdir -p ~/.kube
-          minikube kubectl -- config view --flatten > ~/.kube/config
-          chmod 600 ~/.kube/config
+
       - name: Terraform Init
         run: tofu init
+        # Si tus archivos .tf están en un subdirectorio:
+        # working-directory: ./ruta/a/tus/archivos_tf
 
       - name: Terraform Apply
+        env:
+          # ESTE BLOQUE ES CRUCIAL para que OpenTofu encuentre el kubeconfig correcto.
+          KUBECONFIG: ${{ runner.homedir }}/.kube/config
+          TF_LOG: DEBUG # Mantenlo para obtener logs detallados de OpenTofu.
         run: tofu apply -auto-approve
+        # Si tus archivos .tf están en un subdirectorio:
+        # working-directory: ./ruta/a/tus/archivos_tf
 
-      - name: Verify Deployment
+      - name: Verify Deployment (Post-Apply)
+        env:
+          KUBECONFIG: ${{ runner.homedir }}/.kube/config
         run: |
-          kubectl get all -A
-          minikube service list --url
+          echo "Verifying Kubernetes resources after OpenTofu apply..."
+          kubectl get all --all-namespaces
+          # Descomenta si tienes servicios que exponer y quieres verificar sus URLs
+          # minikube service list --url
