@@ -1,167 +1,71 @@
 name: Deploy with OpenTofu
 
 on:
-  push:
-    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
 
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30 # Aumentado por si Minikube tarda en arrancar
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
 
-    services:
-      # Usar Docker-in-Docker para que Minikube pueda crear contenedores
-      docker:
-        image: docker:dind
-        options: --privileged
+    services:
+      docker:
+        image: docker:dind
+        options: --privileged
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Check Docker
+        run: |
+          docker --version
+          docker info
+          groups # Verifies if the runner user is in the docker group
 
-      - name: Check preinstalled Docker and User Groups
-        run: |
-          echo "Docker version:"
-          docker --version
-          echo "Docker info:"
-          docker info
-          echo "User groups:"
-          groups
+      - name: Install OpenTofu
+        run: |
+          # Instalar OpenTofu usando snap
+          sudo snap install --classic opentofu
+          tofu --version
 
-      - name: Install OpenTofu
-        run: |
-          echo "Installing OpenTofu..."
-          sudo snap install --classic opentofu
-          echo "OpenTofu version:"
-          tofu --version
+      - name: Install kubectl and Minikube
+        run: |
+          # Kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 
-      - name: Install Tools, Start Minikube & Setup Kubeconfig
-        id: minikube_setup
-        run: |
-          # Instalar kubectl
-          echo "Installing kubectl..."
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-          echo "kubectl version (client):"
-          kubectl version --client
+          # Minikube
+          curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+          sudo install minikube-linux-amd64 /usr/local/bin/minikube
 
-          # Instalar Minikube
-          echo "Installing Minikube..."
-          curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
-          sudo install minikube-linux-amd64 /usr/local/bin/minikube
-          echo "Minikube version:"
-          minikube version
+          # Configuración especial para CI
+          export MINIKUBE_IN_STYLE=false
+          export CHANGE_MINIKUBE_NONE_USER=true
+          minikube start --driver=docker --force --wait=all
+          minikube update-context
 
-          # Configuración para Minikube en CI
-          export MINIKUBE_IN_STYLE=false # Deshabilita emojis y spinners para logs más limpios
+          # Verificación
+          kubectl cluster-info
+          minikube status
 
-          echo "Starting Minikube with Docker driver..."
-          # --force para limpiar instalaciones previas. --wait=all espera a los componentes.
-          # --alsologtostderr y -v=3 para logs más detallados de Minikube.
-          minikube start --driver=docker --force --wait=all --alsologtostderr -v=3
+      - name: Setup Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          minikube kubectl -- config view --flatten > ~/.kube/config
+          chmod 600 ~/.kube/config
 
-          echo "Minikube start command finished. Waiting for cluster to be fully ready..."
-          timeout_seconds=420 # 7 minutos de timeout para que Minikube esté listo
-          check_interval_seconds=15
-          elapsed_seconds=0
+      - name: Terraform Init
+        run: tofu init
 
-          # Bucle de espera robusto: verifica el estado de los componentes de Minikube y el endpoint /readyz
-          until minikube status | grep -E 'host: Running|kubelet: Running|apiserver: Running' | wc -l | grep -q 3 && \
-                minikube kubectl -- get --raw='/readyz' 2>/dev/null | grep -q "ok"; do
-            if [ "$elapsed_seconds" -ge "$timeout_seconds" ]; then
-              echo "::error::Timeout reached ($timeout_seconds s). Minikube cluster not ready."
-              echo "Minikube status:"
-              minikube status || echo "Failed to get minikube status"
-              echo "Minikube logs:"
-              minikube logs || echo "Failed to get minikube logs"
-              echo "kubectl get --raw=/readyz output:"
-              minikube kubectl -- get --raw='/readyz' 2>/dev/null || echo "Failed to get /readyz"
-              exit 1
-            fi
-            echo "Minikube not fully ready (host, kubelet, apiserver, or readyz check failed). Retrying in $check_interval_seconds seconds..."
-            sleep $check_interval_seconds
-            elapsed_seconds=$((elapsed_seconds + check_interval_seconds))
-          done
-          echo "Minikube cluster is ready according to status and /readyz."
-
-          echo "Attempting to update kubeconfig context using 'minikube update-context'..."
-          minikube update-context # Intenta actualizar el $HOME/.kube/config por defecto
-          if [ $? -ne 0 ]; then
-            echo "::warning::'minikube update-context' command failed. This might not be critical if direct generation works."
-          fi
-          
-          # Pequeña pausa para que la actualización del contexto se asiente si es necesario
-          sleep 5 
-
-          echo "Current context according to system kubectl (after 'minikube update-context', for informational purposes):"
-          kubectl config current-context || echo "kubectl config current-context failed or no context set at system level."
-
-          echo "Ensuring .kube directory exists at $HOME/.kube"
-          mkdir -p "$HOME/.kube"
-          
-          KUBECONFIG_FILEPATH="$HOME/.kube/config"
-          echo "Generating Kubeconfig at $KUBECONFIG_FILEPATH using 'minikube kubectl -- config view --flatten --minify'..."
-          # Este comando genera un kubeconfig completo directamente desde la instancia de Minikube.
-          minikube kubectl -- config view --flatten --minify > "$KUBECONFIG_FILEPATH"
-          
-          # Verificar si el comando falló o si el archivo generado está vacío
-          if [ $? -ne 0 ] || [ ! -s "$KUBECONFIG_FILEPATH" ]; then
-            echo "::error::Failed to generate kubeconfig or generated file is empty using 'minikube kubectl -- config view'."
-            echo "Content of $KUBECONFIG_FILEPATH (if it exists):"
-            cat "$KUBECONFIG_FILEPATH" 2>/dev/null || echo "File $KUBECONFIG_FILEPATH not found or unreadable."
-            minikube logs
-            exit 1
-          fi
-          
-          chmod 600 "$KUBECONFIG_FILEPATH"
-          echo "Kubeconfig generated. Content of $KUBECONFIG_FILEPATH:"
-          cat "$KUBECONFIG_FILEPATH"
-
-          echo "Verifying the generated Kubeconfig at $KUBECONFIG_FILEPATH..."
-          
-          VERIF_CONTEXT_OUTPUT=$(KUBECONFIG="$KUBECONFIG_FILEPATH" kubectl config current-context 2>&1)
-          # Verificar que el contexto no esté vacío y el comando sea exitoso
-          if ! KUBECONFIG="$KUBECONFIG_FILEPATH" kubectl config current-context &>/dev/null || [[ -z "$VERIF_CONTEXT_OUTPUT" ]] || [[ "$VERIF_CONTEXT_OUTPUT" == *"error"* ]]; then
-            echo "::error::Verification failed: current-context is not set, empty, or an error occurred in generated Kubeconfig ($KUBECONFIG_FILEPATH)."
-            echo "Output of 'kubectl config current-context' on generated file: $VERIF_CONTEXT_OUTPUT"
-            exit 1
-          fi
-          echo "Verified current context in generated Kubeconfig: $VERIF_CONTEXT_OUTPUT"
-          
-          if ! KUBECONFIG="$KUBECONFIG_FILEPATH" kubectl cluster-info &>/dev/null; then
-            echo "::error::Verification failed: 'kubectl cluster-info' failed with generated Kubeconfig ($KUBECONFIG_FILEPATH)."
-            exit 1
-          fi
-          echo "Verified 'kubectl cluster-info' successfully with generated Kubeconfig."
-
-          if ! KUBECONFIG="$KUBECONFIG_FILEPATH" kubectl get nodes &>/dev/null; then
-            echo "::error::Verification failed: 'kubectl get nodes' failed with generated Kubeconfig ($KUBECONFIG_FILEPATH)."
-            exit 1
-          fi
-          echo "Verified 'kubectl get nodes' successfully with generated Kubeconfig. Nodes:"
-          KUBECONFIG="$KUBECONFIG_FILEPATH" kubectl get nodes
-          
-          echo "Kubeconfig setup successful and verified using $KUBECONFIG_FILEPATH."
-
-      - name: Terraform Init
-        run: tofu init
-        # Si tus archivos .tf están en un subdirectorio, especifícalo con:
-        # working-directory: ./ruta/a/tus/archivos_tf
-
-      - name: Terraform Apply
-        env:
-          # OpenTofu (y su provider de Kubernetes) usarán este KUBECONFIG.
-          KUBECONFIG: ${{ runner.homedir }}/.kube/config
-          TF_LOG: DEBUG # Mantenlo para obtener logs detallados de OpenTofu.
-        run: tofu apply -auto-approve
-        # Si tus archivos .tf están en un subdirectorio:
-        # working-directory: ./ruta/a/tus/archivos_tf
-
-      - name: Verify Deployment (Post-Apply)
-        env:
-          KUBECONFIG: ${{ runner.homedir }}/.kube/config
-        run: |
-          echo "Verifying Kubernetes resources after OpenTofu apply..."
-          kubectl get all --all-namespaces # Obtener todos los recursos en todos los namespaces
-          # Si tienes servicios expuestos, puedes intentar listarlos:
-          # minikube service list --url
+      - name: Terraform Apply
+        env:
+          KUBECONFIG: ${{ runner.homedir }}/.kube/config
+          TF_LOG: DEBUG # Mantenlo para obtener logs detallados
+        run: tofu apply -auto-approve
+        
+      - name: Verify Deployment
+        run: |
+          kubectl get all -A
+          minikube service list --url
