@@ -48,17 +48,25 @@ jobs:
 
           # Esperar a que el cluster de Minikube esté listo y el contexto se actualice
           echo "Esperando a que Minikube esté completamente listo y el contexto se actualice..."
-          for i in $(seq 1 10); do
+          for i in $(seq 1 20); do # Aumentamos el número de intentos
             minikube update-context
-            # Intentar obtener info del cluster, si falla, esperar y reintentar
-            if kubectl cluster-info &>/dev/null; then
-              echo "Minikube está listo."
+            # Verificar si el contexto actual está establecido y no está vacío
+            CURRENT_CONTEXT=$(kubectl config current-context 2>/dev/null)
+            if [ -n "$CURRENT_CONTEXT" ]; then # -n comprueba si la cadena no está vacía
+              echo "Minikube está listo y el contexto '$CURRENT_CONTEXT' está establecido."
               break
             fi
-            echo "Minikube no está listo aún, reintentando en 5 segundos..."
+            echo "Minikube no está listo aún o el contexto no está establecido, reintentando en 5 segundos..."
             sleep 5
           done
           
+          # Si después de los intentos el contexto no está, fallar explícitamente
+          CURRENT_CONTEXT=$(kubectl config current-context 2>/dev/null)
+          if [ -z "$CURRENT_CONTEXT" ]; then
+            echo "Error: Minikube no pudo establecer el contexto de Kubernetes después de múltiples intentos."
+            exit 1
+          fi
+
           # Verificación final
           kubectl cluster-info
           minikube status
@@ -69,12 +77,14 @@ jobs:
           echo "Ensuring .kube directory exists at $HOME/.kube"
           mkdir -p "$HOME/.kube"
           echo "Generating Kubeconfig at $HOME/.kube/config"
+          # Usamos 'minikube kubectl --' para asegurar que se usa el kubectl de minikube
           minikube kubectl -- config view --flatten > "$HOME/.kube/config"
           echo "Setting permissions for $HOME/.kube/config"
           chmod 600 "$HOME/.kube/config"
           echo "Kubeconfig content:"
           cat "$HOME/.kube/config"
           echo "Verifying Kubeconfig with Kubectl:"
+          # Usamos KUBECONFIG explícitamente para todas las llamadas a kubectl
           KUBECONFIG="$HOME/.kube/config" kubectl config current-context
           KUBECONFIG="$HOME/.kube/config" kubectl cluster-info
           KUBECONFIG="$HOME/.kube/config" kubectl get nodes
